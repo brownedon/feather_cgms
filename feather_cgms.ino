@@ -13,7 +13,14 @@
 #define SLOPE_FILENAME "/slope.txt"
 #define INTERCEPT_FILENAME "/intercept.txt"
 
+#define VBAT_PIN          (A7)
+#define VBAT_MV_PER_LSB   (0.73242188F)   // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
+#define VBAT_DIVIDER      (0.71275837F)   // 2M + 0.806M voltage divider on VBAT = (2M / (0.806M + 2M))
+#define VBAT_DIVIDER_COMP (1.403F)        // Compensation factor for the VBAT divider
+
 NffsFile file;
+
+ble_gap_evt_adv_report_t* global_report;
 
 int newValue = 0;
 uint16_t value ;
@@ -24,6 +31,9 @@ int waitTime = 0;
 int showReadings = 0;
 int alertCount = 0;
 int periph_connected = 0;
+int lowBatt = 0;
+int missCount = 0;
+int connecting = 0;
 
 //cgms
 //
@@ -36,8 +46,8 @@ struct readings readings_arr[3];
 struct readings reading;
 
 int message_len = 0;
-int GLUCOSE = 2;
-int EST_GLUCOSE = 2;
+int GLUCOSE = 0;
+int EST_GLUCOSE = 0;
 int SLOPE = 700;
 int INTERCEPT = 30000;
 long ISIG;
@@ -86,7 +96,6 @@ const int GDO0_PIN = PIN_A4;     // the number of the GDO0_PIN pin
 
 CC2500 cc2500;
 byte buffer[20];
-uint8_t  bps = 0;
 
 //
 // end cc2500
@@ -121,14 +130,10 @@ int authenticated = 1;
 
 uint8_t CONFIRM[2] = {0x02, 0x08};
 
-/*UUID_CHARACTERISTIC_AUTH  "00000009-0000-3512-2118-0009af100700";*/
 const uint8_t AUTH_SERVICE_UUID[] = { 0x00, 0x07, 0x10, 0xaf, 0x09, 0x00, 0x18, 0x21, 0x12, 0x35, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00};
 
 BLEClientService authService(0xFEE1);
 BLEClientCharacteristic authNotif(AUTH_SERVICE_UUID);
-
-BLEClientService       ImmediateAlertService(0x1802);
-BLEClientCharacteristic AlertLevelCharacteristic(0x2a06);
 
 //
 BLEClientService       AlertNotifService(0x1811);
@@ -156,12 +161,11 @@ BLECharacteristic slope = BLECharacteristic(SLOPE_CHARACTERISTIC_UUID);
 BLECharacteristic intercept = BLECharacteristic(INTERCEPT_CHARACTERISTIC_UUID);
 BLECharacteristic battery = BLECharacteristic(BATTERY_CHARACTERISTIC_UUID);
 
-BLEDis bledis;    // DIS (Device Information Service) helper class instance
-BLEBas blebas;    // BAS (Battery Service) helper class instance
-
 //
 // end peripheral
 //
+
+#define FPU_EXCEPTION_MASK 0x0000009F
 
 void setup()
 {
@@ -188,7 +192,8 @@ void setup()
   setup_mi();
   setupCGMS();
   initReadings();
-
+  Scheduler.startLoop(loop_cc2500);
+  //this sets up nffs for the first time
   if (!authenticated) {
     writeSlope();
     writeIntercept();
@@ -201,20 +206,19 @@ void setup_mi() {
   // set up callback for receiving measurement
   authNotif.setNotifyCallback(authNotif_callback);
   authNotif.begin();
-
-  ImmediateAlertService.begin();
-  AlertLevelCharacteristic.begin();
-
+  
   AlertNotifService.begin();
   NewAlertCharacteristic.begin();
   Bluefruit.Scanner.setRxCallback(scan_callback);
 
+
   // Callbacks for Central
   Bluefruit.Central.setDisconnectCallback(cent_disconnect_callback);
   Bluefruit.Central.setConnectCallback(cent_connect_callback);
+  Bluefruit.Scanner.restartOnDisconnect(false);
+  Bluefruit.Scanner.filterRssi(-80);
   Bluefruit.Scanner.setInterval(160, 80);       // in units of 0.625 ms
   Bluefruit.Scanner.useActiveScan(true);        // Request scan response data
-
 }
 
 void setup_cc2500() {
@@ -230,6 +234,7 @@ void setup_cc2500() {
 
 void setupCGMS(void)
 {
+  Serial.println("SetupCGMS");
   cgms.begin();
   isig.setProperties(CHR_PROPS_NOTIFY);
   isig.setPermission(SECMODE_OPEN, SECMODE_OPEN);
@@ -240,6 +245,7 @@ void setupCGMS(void)
   uint8_t hrmdata[5] = { 0x00, 0x00, 0x00, 0x00, 0x00 };
   isig.notify(hrmdata, 5);                   // Use .notify instead of .write!
   //
+  Serial.println("slope");
   uint8_t tmpValue[2] = {0x00, 0x00};
   slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
   slope.setPermission(SECMODE_OPEN, SECMODE_OPEN);
@@ -248,6 +254,7 @@ void setupCGMS(void)
   slope.begin();
   slope.write(tmpValue, 2);
   //
+  Serial.println("intercept");
   intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
   intercept.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   intercept.setUserDescriptor("Intercept");
@@ -255,15 +262,15 @@ void setupCGMS(void)
   intercept.begin();
   intercept.write(tmpValue, 2);
   //
+  Serial.println("battery");
   battery.setProperties(CHR_PROPS_NOTIFY);
-  //battery.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
   battery.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   battery.setUserDescriptor("Battery");
   battery.setCccdWriteCallback(cccd_callback2);
   battery.setFixedLen(1);
   battery.begin();
-  //battery.write(0);
-  battery.notify(0);
+  battery.notify(tmpValue, 1);
+  Serial.println("Done SetupCGMS");
 }
 
 void cccd_callback1(BLECharacteristic& chr, uint16_t cccd_)
@@ -297,36 +304,53 @@ void startAdv(void)
 
 void loop()
 {
-  //cc2500
-  if (cc2500_recv_time == 0 || millis() >= (cc2500_recv_time + (int(295) * 1000) )) {
-    Serial.println("CC2500 Listen");
-    //cc2500_millis = millis();
-    waitTime = RxData_RF();
-    Serial.print("Next Start:");
-    Serial.println(int(297 - waitTime) * 1000);
-
-    firstTime = false;
-    cc2500.SendStrobe(CC2500_CMD_SPWD);
-    Serial.println("SendStrobe CC2500_CMD_SIDLE");
-    cc2500.SendStrobe(CC2500_CMD_SIDLE);
-  }
-
   peripheral_comm();
 
+  /* Clear exceptions and PendingIRQ from the FPU unit */
+  // See: https://devzone.nordicsemi.com/f/nordic-q-a/15243/high-power-consumption-when-using-fpu
+  // possibly triggered by low level errors that I've since resolved
+  // ex. closing a connection that was already closed
+  // leaving this here anyway
+  __set_FPSCR(__get_FPSCR()  & ~(FPU_EXCEPTION_MASK));
+  (void) __get_FPSCR();
+  NVIC_ClearPendingIRQ(FPU_IRQn);
   waitForEvent();
+  delay(2000);
+}
 
+void loop_cc2500()
+{
+  //cc2500
+  Serial.println("CC2500 Listen");
+  waitTime = RxData_RF();
+  Serial.print("Next Start:");
+  Serial.println(int(298 - waitTime) * 1000);
+  firstTime = false;
+  cc2500.SendStrobe(CC2500_CMD_SPWD);
+  Serial.println("SendStrobe CC2500_CMD_SIDLE");
+  cc2500.SendStrobe(CC2500_CMD_SIDLE);
+
+  waitForEvent();
+  delay(int(298) * 1000);
 }
 
 void peripheral_comm() {
-  if (millis() - periph_notif_millis > 10000) {
-
+  if (millis() - periph_notif_millis > 20000) {
+    Serial.println("peripheral_comm");
     periph_notif_millis = millis();
 
     if (OLD_ISIG != ISIG) {
       OLD_ISIG = ISIG;
+      missCount = 0;
       handle_isig();
+    } else {
+      missCount++;
     }
 
+    if (missCount > 30) {
+      missCount = 0;
+      missedReadingsMsg();
+    }
     if ( Bluefruit.connected() ) {
 
       //send isig to phone
@@ -339,7 +363,6 @@ void peripheral_comm() {
         ch[3] = (int)((ISIG >> 8) & 0XFF);
         ch[4] = (int)((ISIG & 0XFF));
 
-        //uint8_t isig_data[4] = { ch[0], ch[1], ch[2], ch[3] };
         if ( !isig.notify(ch, 5)) {
           Serial.println("isig characteristic update failed");
         };
@@ -374,10 +397,30 @@ void peripheral_comm() {
   }
 }
 
+void missedReadingsMsg() {
+  message[0] = 0x03;
+  message[1] = 0x01;
+  message[2] = 0x4d;//M
+  message[3] = 0x69;//i
+  message[4] = 0x73;//s
+  message[5] = 0x73;//s
+  message[6] = 0x20;
+  message[7] = 0x20;
+  message[8] = 0x20;
+  message[9] = 0x20;
+  message[10] = 0x20;
+  message[11] = 0x20;
+
+  message_len = 12;
+  newValue = 1;
+  Bluefruit.Scanner.start(20);
+  Serial.println("Scanning ...");
+}
+
 void handle_isig() {
   Serial.println("handle_isig");
 
-  newValue = 1;
+  newValue = 0;
   Serial.print("ISIG:"); Serial.println(ISIG);
   Serial.print("INTERCEPT:"); Serial.println(INTERCEPT);
   Serial.print("SLOPE:"); Serial.println(SLOPE);
@@ -386,12 +429,17 @@ void handle_isig() {
   Serial.println(GLUCOSE);
 
 
-  double Slope = getSlopeGlucose();
+  float Slope = getSlopeGlucose();
   int timeToLimit = 0;
-  char c_glucose[3];
+  char c_glucose[10];
 
   // what glucose MIGHT be right now, assuming 15 minute delay
-  EST_GLUCOSE = GLUCOSE + (Slope * 15);
+  EST_GLUCOSE = GLUCOSE;// + (Slope * 15);
+
+  //stop estimating if it's really low or really high.
+  if (EST_GLUCOSE < 40 || EST_GLUCOSE > 300) {
+    EST_GLUCOSE = GLUCOSE;
+  }
 
   //rising, how long until 180
   if (Slope > 0 && GLUCOSE < 180) {
@@ -436,7 +484,7 @@ void handle_isig() {
     } else {
       msgType = 0x05;
       alertCount++;
-      if (alertCount >= 3) {
+      if (alertCount >= 6) {
         alertCount = 0;
       }
     }
@@ -449,7 +497,7 @@ void handle_isig() {
     } else {
       msgType = 0x05;
       alertCount++;
-      if (alertCount >= 2) {
+      if (alertCount >= 4) {
         alertCount = 0;
       }
     }
@@ -494,14 +542,14 @@ void handle_isig() {
       } else {
         // to do add slope to message
         if (abs(Slope) > 0.1) {
-          double value = abs(Slope);
+          float value = abs(Slope);
           int left_part, right_part;
           char buffer[50];
           sprintf(buffer, "%2.1lf", value);
           sscanf(buffer, "%d.%d", &left_part, &right_part);
           sprintf(c_glucose, "%d", left_part);
           message[6] = c_glucose[0];
-          message[7] = 0x2e; //period
+          message[7] = 0x2e; //decimal point
           sprintf(c_glucose, "%d", right_part);
           message[8] = c_glucose[0];
         }
@@ -511,13 +559,7 @@ void handle_isig() {
       sprintf(c_glucose, "%d", timeToLimit);
       message[7] = c_glucose[0];
       message[8] = c_glucose[1];
-
-      if (Slope > 0) {
-        message[10] = 0x2b; //+
-      };
-      if (Slope < 0) {
-        message[10] = 0x2d; //-
-      }
+      message[9] = 0x20;
     }
   } else {
     //send notification only once
@@ -533,10 +575,17 @@ void handle_isig() {
     }
   }
 
-  if (readings_arr[0].glucose != 0) {
+  if (readings_arr[0].glucose != 0 && readings_arr[1].glucose != 0) {
     if (abs(readings_arr[0].glucose - readings_arr[1].glucose) > 25) {
-      message[11] = 0x3f;
+      message[11] = 0x3f;  //?
     }
+  }
+
+  if (Slope > 0) {
+    message[10] = 0x2b; //+
+  };
+  if (Slope < 0) {
+    message[10] = 0x2d; //-
   }
 
   Serial.print("Slope:"); Serial.println(Slope);
@@ -546,10 +595,9 @@ void handle_isig() {
   message[1] = 0x01;
 
   if (message[2] != 0xff) {
-
+    newValue = 1;
     message_len = 12;
-
-    Bluefruit.Scanner.start(10);                   // 0 = Don't stop scanning after n seconds
+    Bluefruit.Scanner.start(20);
     Serial.println("Scanning ...");
   }
 }
@@ -573,26 +621,26 @@ void addReading(long rawcounts, int glucose) {
 
 }
 
-double getSlopeGlucose() {
+float getSlopeGlucose() {
   Serial.println("getSlopeGlucose");
-  int count = 0;
+  int counter = 0;
   float sumx = 0.0, sumy = 0.0, sum1 = 0.0, sum2 = 0.0;
 
   for (int i = 0; i < 3; i++ ) {
     if (readings_arr[i].glucose > 20) {
-      count++;
-      sumx = sumx + readings_arr[i].seconds / 60;
-      sumy = sumy + readings_arr[i].glucose;
+      counter++;
+      sumx = sumx + (float)(readings_arr[i].seconds / 60);
+      sumy = sumy + (float)(readings_arr[i].glucose);
     }
   }
 
-  float xmean = sumx / count;
-  float ymean = sumy / count;
+  float xmean = sumx / counter;
+  float ymean = sumy / counter;
 
-  for (int i = 0; i < count; i ++) {
+  for (int i = 0; i < counter; i ++) {
     if (readings_arr[i].glucose > 20) {
-      sum1 = sum1 + (readings_arr[i].seconds / 60 - xmean) * (readings_arr[i].glucose - ymean);
-      sum2 = sum2 + pow((readings_arr[i].seconds / 60 - xmean), 2);
+      sum1 = sum1 + ( (float)(readings_arr[i].seconds / 60) - xmean) * ((float)(readings_arr[i].glucose) - ymean);
+      sum2 = sum2 + pow(((float)(readings_arr[i].seconds / 60) - xmean), 2);
     }
   }
 
@@ -600,11 +648,10 @@ double getSlopeGlucose() {
   if (sum2 == 0) {
     return 0;
   }
-  float slope = sum1 / sum2;
-  float intercept = ymean - slope * xmean;
-
-    return slope;
+  Serial.print(sum1); Serial.print(":"); Serial.println(sum2);
+  return sum1 / sum2;
 };
+
 
 /*------------------------------------------------------------------*/
 /* Peripheral
@@ -675,6 +722,7 @@ long RxData_RF(void)
     Serial.println(Delay);
     while (!digitalRead(GDO0_PIN) && (millis() - timeStart < Delay) || (!digitalRead(GDO0_PIN) && Delay == 0))
     {
+      delay(1);
       if (periph_connected) {
         peripheral_comm();
       }
@@ -905,11 +953,13 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   uint8_t len = 0;
   uint8_t buffer[32];
   memset(buffer, 0, sizeof(buffer));
-  //mi band is FA:AB:33:E3:12:2D
-  if (report->peer_addr.addr[5] == 0xFA) {
-    // Connect to device
-    Serial.println("Found device");
-    if (newValue) {
+  if (!connecting) {
+    //mi band is FA:AB:33:E3:12:2D
+     if (report->peer_addr.addr[5] == 0xFA) {  //dons
+    //if (report->peer_addr.addr[5] == 0xF8) {  //karins
+      // Connect to device
+      Serial.println("Found device");
+      connecting = 1;
       Bluefruit.Central.connect(report);
     }
   }
@@ -959,16 +1009,6 @@ void cent_connect_callback(uint16_t conn_handle)
       }
     }
   }
-
-  if (ImmediateAlertService.discover(conn_handle) )
-  {
-    Serial.println("Found Alert Service");
-
-    if (AlertLevelCharacteristic.discover()) {
-      Serial.println("Found alert characteristic");
-    }
-
-  }
 }
 
 void cent_disconnect_callback(uint16_t conn_handle, uint8_t reason)
@@ -976,6 +1016,7 @@ void cent_disconnect_callback(uint16_t conn_handle, uint8_t reason)
   (void) conn_handle;
   (void) reason;
   Paired = 0;
+  connecting = 0;
   Serial.println("Disconnected");
 }
 
@@ -1042,6 +1083,28 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
       NewAlertCharacteristic.write_resp( message, 12 ) ;
     } else {
       Serial.println("Already sent, skip");
+      Bluefruit.Scanner.stop();
+    }
+
+    Serial.print("Battery ");
+    Serial.println(readVBAT());
+    if (readVBAT() < 2500  && lowBatt == 0) {
+      delay(1000);
+      message[0] = 0x03;
+      message[1] = 0x01;
+      message[2] = 0x42;//B
+      message[3] = 0x61;//a
+      message[4] = 0x74;//t
+      message[5] = 0x74;//t
+      delay(3000);
+      NewAlertCharacteristic.write_resp( message, 6) ;
+      lowBatt == 1;
+    }
+
+    //2200 never alerts
+    if (readVBAT() > 2500  && lowBatt == 1) {
+      //reset although plugging in to charge probably cleared this anyway
+      lowBatt == 0;
     }
     newValue = 0;
   }
@@ -1147,6 +1210,28 @@ void readIntercept() {
   } else {
     Serial.println("State file does not yet exist");
   }
+}
+
+int readVBAT(void) {
+  int raw;
+
+  // Set the analog reference to 3.0V (default = 3.6V)
+  analogReference(AR_INTERNAL_3_0);
+
+  // Set the resolution to 12-bit (0..4095)
+  analogReadResolution(12); // Can be 8, 10, 12 or 14
+
+  // Let the ADC settle
+  delay(1);
+
+  // Get the raw 12-bit, 0..3000mV ADC value
+  raw = analogRead(VBAT_PIN);
+
+  // Set the ADC back to the default settings
+  analogReference(AR_DEFAULT);
+  analogReadResolution(10);
+
+  return raw;
 }
 
 void rtos_idle_callback(void)
