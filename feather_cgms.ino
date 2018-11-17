@@ -206,7 +206,7 @@ void setup_mi() {
   // set up callback for receiving measurement
   authNotif.setNotifyCallback(authNotif_callback);
   authNotif.begin();
-  
+
   AlertNotifService.begin();
   NewAlertCharacteristic.begin();
   Bluefruit.Scanner.setRxCallback(scan_callback);
@@ -335,7 +335,7 @@ void loop_cc2500()
 }
 
 void peripheral_comm() {
-  if (millis() - periph_notif_millis > 20000) {
+  if (millis() - periph_notif_millis > 30000) {
     Serial.println("peripheral_comm");
     periph_notif_millis = millis();
 
@@ -394,6 +394,11 @@ void peripheral_comm() {
         writeIntercept();
       }
     }
+    //send any new messages to the MI
+    if (newValue  && !Paired) {
+      Bluefruit.Scanner.start(20);
+      Serial.println("Scanning ...");
+    }
   }
 }
 
@@ -413,8 +418,6 @@ void missedReadingsMsg() {
 
   message_len = 12;
   newValue = 1;
-  Bluefruit.Scanner.start(20);
-  Serial.println("Scanning ...");
 }
 
 void handle_isig() {
@@ -434,7 +437,7 @@ void handle_isig() {
   char c_glucose[10];
 
   // what glucose MIGHT be right now, assuming 15 minute delay
-  EST_GLUCOSE = GLUCOSE;// + (Slope * 15);
+  EST_GLUCOSE = GLUCOSE + (Slope * 15);
 
   //stop estimating if it's really low or really high.
   if (EST_GLUCOSE < 40 || EST_GLUCOSE > 300) {
@@ -536,10 +539,6 @@ void handle_isig() {
   if ((EST_GLUCOSE < 90 || EST_GLUCOSE > 160) || (sqrt(pow(Slope, 2)) > 1.5)) {
     showReadings = 0;
     if (timeToLimit == 0 || timeToLimit == 1) {
-      if (EST_GLUCOSE > 80 && EST_GLUCOSE < 180) {
-        //do nothing
-        message[5] = 0x20;
-      } else {
         // to do add slope to message
         if (abs(Slope) > 0.1) {
           float value = abs(Slope);
@@ -552,7 +551,6 @@ void handle_isig() {
           message[7] = 0x2e; //decimal point
           sprintf(c_glucose, "%d", right_part);
           message[8] = c_glucose[0];
-        }
       }
     } else {
       message[6] = 0x20;
@@ -597,8 +595,6 @@ void handle_isig() {
   if (message[2] != 0xff) {
     newValue = 1;
     message_len = 12;
-    Bluefruit.Scanner.start(20);
-    Serial.println("Scanning ...");
   }
 }
 
@@ -953,10 +949,11 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   uint8_t len = 0;
   uint8_t buffer[32];
   memset(buffer, 0, sizeof(buffer));
+  //prevent multiple simultaneous connection attempts
   if (!connecting) {
     //mi band is FA:AB:33:E3:12:2D
-     if (report->peer_addr.addr[5] == 0xFA) {  //dons
-    //if (report->peer_addr.addr[5] == 0xF8) {  //karins
+   if (report->peer_addr.addr[5] == 0xFA) {  //dons
+      //if (report->peer_addr.addr[5] == 0xF8) {  //karins
       // Connect to device
       Serial.println("Found device");
       connecting = 1;
