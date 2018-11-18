@@ -335,7 +335,7 @@ void loop_cc2500()
 }
 
 void peripheral_comm() {
-  if (millis() - periph_notif_millis > 1000) {
+  if (millis() - periph_notif_millis > 10000) {
     Serial.println("peripheral_comm");
     periph_notif_millis = millis();
 
@@ -347,7 +347,7 @@ void peripheral_comm() {
       missCount++;
     }
 
-    if (missCount > 30) {
+    if (missCount > 65) {
       missCount = 0;
       missedReadingsMsg();
     }
