@@ -216,7 +216,7 @@ void setup_mi() {
   Bluefruit.Central.setDisconnectCallback(cent_disconnect_callback);
   Bluefruit.Central.setConnectCallback(cent_connect_callback);
   Bluefruit.Scanner.restartOnDisconnect(false);
-  Bluefruit.Scanner.filterRssi(-80);
+  //Bluefruit.Scanner.filterRssi(-80);
   Bluefruit.Scanner.setInterval(160, 80);       // in units of 0.625 ms
   Bluefruit.Scanner.useActiveScan(true);        // Request scan response data
 }
@@ -335,7 +335,7 @@ void loop_cc2500()
 }
 
 void peripheral_comm() {
-  if (millis() - periph_notif_millis > 30000) {
+  if (millis() - periph_notif_millis > 1000) {
     Serial.println("peripheral_comm");
     periph_notif_millis = millis();
 
@@ -1078,6 +1078,7 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
       }
 
       NewAlertCharacteristic.write_resp( message, 12 ) ;
+          newValue = 0;
     } else {
       Serial.println("Already sent, skip");
       Bluefruit.Scanner.stop();
@@ -1103,7 +1104,6 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
       //reset although plugging in to charge probably cleared this anyway
       lowBatt == 0;
     }
-    newValue = 0;
   }
 }
 
