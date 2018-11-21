@@ -395,7 +395,7 @@ void peripheral_comm() {
       }
     }
     //send any new messages to the MI
-    if (newValue  && !Paired) {
+    if (newValue ) {
       Bluefruit.Scanner.start(20);
       Serial.println("Scanning ...");
     }
@@ -965,6 +965,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
 void cent_connect_callback(uint16_t conn_handle)
 {
   Serial.println("Connected");
+   connecting = 0;
   conn_handle1 = conn_handle;
   if (AlertNotifService.discover(conn_handle)) {
     Serial.println("AlertNotifService discovered");
