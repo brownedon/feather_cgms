@@ -950,7 +950,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   uint8_t buffer[32];
   memset(buffer, 0, sizeof(buffer));
   //prevent multiple simultaneous connection attempts
-  if (!connecting) {
+ if(! Bluefruit.Central.connected()){
     //mi band is FA:AB:33:E3:12:2D
    if (report->peer_addr.addr[5] == 0xFA) {  //dons
       //if (report->peer_addr.addr[5] == 0xF8) {  //karins
@@ -959,7 +959,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
       connecting = 1;
       Bluefruit.Central.connect(report);
     }
-  }
+ }
 }
 
 void cent_connect_callback(uint16_t conn_handle)
