@@ -140,7 +140,7 @@ BLEClientService       AlertNotifService(0x1811);
 BLEClientCharacteristic NewAlertCharacteristic(0x2a46);
 
 int Paired = 0;
-uint16_t conn_handle1;
+//uint16_t conn_handle1;
 //
 // end mi
 //
@@ -332,6 +332,7 @@ void loop_cc2500()
 
   waitForEvent();
   delay(int(298) * 1000);
+  connecting = 0;
 }
 
 void peripheral_comm() {
@@ -396,8 +397,10 @@ void peripheral_comm() {
     }
     //send any new messages to the MI
     if (newValue ) {
-      Bluefruit.Scanner.start(20);
-      Serial.println("Scanning ...");
+      if (!Bluefruit.Central.connected() && !connecting) {
+        Bluefruit.Scanner.start(20);
+        Serial.println("Scanning ...");
+      }
     }
   }
 }
@@ -539,18 +542,18 @@ void handle_isig() {
   if ((EST_GLUCOSE < 90 || EST_GLUCOSE > 160) || (sqrt(pow(Slope, 2)) > 1.5)) {
     showReadings = 0;
     if (timeToLimit == 0 || timeToLimit == 1) {
-        // to do add slope to message
-        if (abs(Slope) > 0.1) {
-          float value = abs(Slope);
-          int left_part, right_part;
-          char buffer[50];
-          sprintf(buffer, "%2.1lf", value);
-          sscanf(buffer, "%d.%d", &left_part, &right_part);
-          sprintf(c_glucose, "%d", left_part);
-          message[6] = c_glucose[0];
-          message[7] = 0x2e; //decimal point
-          sprintf(c_glucose, "%d", right_part);
-          message[8] = c_glucose[0];
+      // to do add slope to message
+      if (abs(Slope) > 0.1) {
+        float value = abs(Slope);
+        int left_part, right_part;
+        char buffer[50];
+        sprintf(buffer, "%2.1lf", value);
+        sscanf(buffer, "%d.%d", &left_part, &right_part);
+        sprintf(c_glucose, "%d", left_part);
+        message[6] = c_glucose[0];
+        message[7] = 0x2e; //decimal point
+        sprintf(c_glucose, "%d", right_part);
+        message[8] = c_glucose[0];
       }
     } else {
       message[6] = 0x20;
@@ -950,23 +953,24 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   uint8_t buffer[32];
   memset(buffer, 0, sizeof(buffer));
   //prevent multiple simultaneous connection attempts
- if(! Bluefruit.Central.connected()){
+  if (! Bluefruit.Central.connected() && !connecting) {
     //mi band is FA:AB:33:E3:12:2D
-   if (report->peer_addr.addr[5] == 0xFA) {  //dons
+    if (report->peer_addr.addr[5] == 0xFA) {  //dons
       //if (report->peer_addr.addr[5] == 0xF8) {  //karins
       // Connect to device
       Serial.println("Found device");
       connecting = 1;
       Bluefruit.Central.connect(report);
+      (void) report;
     }
- }
+  }
 }
 
 void cent_connect_callback(uint16_t conn_handle)
 {
   Serial.println("Connected");
-   connecting = 0;
-  conn_handle1 = conn_handle;
+  connecting = 0;
+  //conn_handle1 = conn_handle;
   if (AlertNotifService.discover(conn_handle)) {
     Serial.println("AlertNotifService discovered");
   }
@@ -1079,15 +1083,17 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
       }
 
       NewAlertCharacteristic.write_resp( message, 12 ) ;
-          newValue = 0;
+      newValue = 0;
     } else {
       Serial.println("Already sent, skip");
       Bluefruit.Scanner.stop();
     }
 
     Serial.print("Battery ");
-    Serial.println(readVBAT());
-    if (readVBAT() < 2500  && lowBatt == 0) {
+
+    int vbat = readVBAT();
+    Serial.println(vbat);
+    if (vbat < 2900  && lowBatt == 0) {
       delay(1000);
       message[0] = 0x03;
       message[1] = 0x01;
@@ -1101,7 +1107,7 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
     }
 
     //2200 never alerts
-    if (readVBAT() > 2500  && lowBatt == 1) {
+    if (vbat > 2900  && lowBatt == 1) {
       //reset although plugging in to charge probably cleared this anyway
       lowBatt == 0;
     }
