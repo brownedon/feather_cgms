@@ -6,3 +6,5 @@ All relevant information should be available via the CGMS service, through the i
 Your app should read the ISIG, determine a Slope and Intercept value through the algo of your choice, then write it back through the exposed characteristics.
 
 First time run, set authenticated=0, this will Pair the bluefruit with your MI Band and write the default slope and intercept values to flash.
+
+This will also work on the Amazfit Cor.
