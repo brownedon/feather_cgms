@@ -125,9 +125,13 @@ uint8_t SECRET_KEY[18]  = {0x01, 0x08, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
 const uint8_t SHORT_SECRET_KEY[16]  = { 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45};
 
 const uint8_t PAIRING_KEY[18] = {0x01, 0x08, 0xC8, 0x2A, 0xE3, 0x40, 0xEB, 0x1A, 0x5F, 0x1A, 0x36, 0x33, 0x59, 0x4B, 0x2B, 0xA4, 0x43, 0x4A};
+//
 //first time run with a new mi band, change to 0 for full pairing
+//
 int authenticated = 1;
-
+int amazfit_cor=0;
+int important_alert=0;
+//
 uint8_t CONFIRM[2] = {0x02, 0x08};
 
 const uint8_t AUTH_SERVICE_UUID[] = { 0x00, 0x07, 0x10, 0xaf, 0x09, 0x00, 0x18, 0x21, 0x12, 0x35, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00};
@@ -332,6 +336,7 @@ void loop_cc2500()
 
   waitForEvent();
   delay(int(298) * 1000);
+  Bluefruit.Scanner.stop();
   connecting = 0;
 }
 
@@ -592,6 +597,14 @@ void handle_isig() {
   Serial.print("Slope:"); Serial.println(Slope);
   Serial.print("TimeToLimit:"); Serial.println(timeToLimit);
 
+  //dont do sms here
+  if (amazfit_cor){
+    if (msgType==0x03){
+      important_alert=1;
+      }
+   msgType = 0x05;
+  }
+
   message[0] = msgType;
   message[1] = 0x01;
 
@@ -722,9 +735,9 @@ long RxData_RF(void)
     while (!digitalRead(GDO0_PIN) && (millis() - timeStart < Delay) || (!digitalRead(GDO0_PIN) && Delay == 0))
     {
       delay(1);
-      if (periph_connected) {
-        peripheral_comm();
-      }
+      //if (periph_connected) {
+      //  peripheral_comm();
+      //}
     }
     if (digitalRead(GDO0_PIN)) {
       Serial.println(digitalRead(GDO0_PIN));
@@ -955,7 +968,9 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   //prevent multiple simultaneous connection attempts
   if (! Bluefruit.Central.connected() && !connecting) {
     //mi band is FA:AB:33:E3:12:2D
-    if (report->peer_addr.addr[5] == 0xFA) {  //dons
+    Serial.println(report->peer_addr.addr[5],HEX);
+    if (report->peer_addr.addr[5] == 0xFB) {  //amazfit cor
+        //if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
       //if (report->peer_addr.addr[5] == 0xF8) {  //karins
       // Connect to device
       Serial.println("Found device");
@@ -1084,9 +1099,9 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
 
       NewAlertCharacteristic.write_resp( message, 12 ) ;
       newValue = 0;
-    } else {
-      Serial.println("Already sent, skip");
-      Bluefruit.Scanner.stop();
+    //} else {
+    //  Serial.println("Already sent, skip");
+    //  Bluefruit.Scanner.stop();
     }
 
     Serial.print("Battery ");
@@ -1105,7 +1120,7 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
       NewAlertCharacteristic.write_resp( message, 6) ;
       lowBatt == 1;
     }
-
+    
     //2200 never alerts
     if (vbat > 2900  && lowBatt == 1) {
       //reset although plugging in to charge probably cleared this anyway
