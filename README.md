@@ -8,3 +8,5 @@ Your app should read the ISIG, determine a Slope and Intercept value through the
 First time run, set authenticated=0, this will Pair the bluefruit with your MI Band and write the default slope and intercept values to flash.
 
 This will also work on the Amazfit Cor.
+
+Updated to work with Adafruit firmware 0.11.  This was originally on 0.8.6.
