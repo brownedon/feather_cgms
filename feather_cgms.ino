@@ -37,7 +37,7 @@ int alertCount = 0;
 int lowBatt = 0;
 int missCount = 0;
 
-int Alert=0;
+int Alert = 0;
 
 //cgms
 //
@@ -117,14 +117,6 @@ AES128 aes128;
 
 byte enc_buffer[18];
 
-uint8_t AUTH_SEND_KEY = 0x01;
-uint8_t AUTH_REQUEST_RANDOM_AUTH_NUMBER  = 0x02;
-uint8_t AUTH_SEND_ENCRYPTED_AUTH_NUMBER = 0x03;
-uint8_t AUTH_RESPONSE  = 0x10;
-uint8_t AUTH_SUCCESS = 0x01;
-uint8_t AUTH_FAIL = 0x04;
-uint8_t AUTH_BYTE = 0x8;
-
 uint8_t SECRET_KEY[18]  = {0x01, 0x08, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45};
 const uint8_t SHORT_SECRET_KEY[16]  = { 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45};
 
@@ -190,11 +182,11 @@ BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
 void setup()
 {
   Serial.begin(115200);
-    Serial.println("Setup");
-   int countdownMS = Watchdog.enable(10000);
+  Serial.println("Setup");
+  int countdownMS = Watchdog.enable(10000);
   // Initialize Bluefruit with max concurrent connections as Peripheral = 2, Central = 1
   // put 3 here and I think you run out of memory ...
-  // 2,1 also makes it hang 
+  // 2,1 also makes it hang
   Bluefruit.begin(1, 1);
 
   // Initialize Internal File System
@@ -339,7 +331,7 @@ void setupCGMS(void)
   //
   Serial.println("slope");
   uint8_t tmpValue[2] = {0x00, 0x00};
-  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
+  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE | CHR_PROPS_NOTIFY);
   slope.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   slope.setUserDescriptor("Slope");
   slope.setFixedLen(2);
@@ -347,7 +339,7 @@ void setupCGMS(void)
   slope.write(tmpValue, 2);
   //
   Serial.println("intercept");
-  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
+  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE | CHR_PROPS_NOTIFY);
   intercept.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   intercept.setUserDescriptor("Intercept");
   intercept.setFixedLen(2);
@@ -374,16 +366,16 @@ void cccd_callback1(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_val
   Serial.println("");
 }
 /*
-void cccd_callback2(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
-{
+  void cccd_callback2(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
+  {
   // Display the raw request packet
   Serial.print("CCCD Updated: ");
   Serial.print(cccd_value);
   Serial.println("");
-}
+  }
 
-void cccd_callback3(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
-{
+  void cccd_callback3(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
+  {
   // Display the raw request packet
   Serial.print("CCCD Updated: ");
   Serial.print(cccd_value);
@@ -396,7 +388,7 @@ void cccd_callback3(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_val
       Serial.println("Heart Rate Measurement 'Notify' disabled");
     }
   }
-}
+  }
 */
 
 void startAdv(void)
@@ -419,7 +411,7 @@ void startAdv(void)
 void loop()
 {
   peripheral_comm();
-    Watchdog.reset();
+  Watchdog.reset();
   /* Clear exceptions and PendingIRQ from the FPU unit */
   // See: https://devzone.nordicsemi.com/f/nordic-q-a/15243/high-power-consumption-when-using-fpu
   // possibly triggered by low level errors that I've since resolved
@@ -524,15 +516,15 @@ void peripheral_comm() {
     }
     //send "heart rate"
     uint8_t hrmdata[2] = { 0b00000110, EST_GLUCOSE };
-    if (EST_GLUCOSE>229){
-       //if over 229, hrm won't display.  SO just return 229 in this case
-       hrmdata[2] =  229 ;
+    if (EST_GLUCOSE > 229) {
+      //if over 229, hrm won't display.  SO just return 229 in this case
+      hrmdata[2] =  229 ;
     }
 
     if ( hrmc.notify(hrmdata, sizeof(hrmdata)) ) {
       Serial.print("Heart Rate Measurement(glucose) updated to: "); Serial.println(EST_GLUCOSE);
     }
-  
+
   }
 }
 
@@ -557,9 +549,9 @@ void missedReadingsMsg() {
 void do_messaging() {
   if (Paired) {
     //if high, low or rapidly changing, vibrate until acknowledged
-    if (Alert){
+    if (Alert) {
       Serial.println("Alert");
-      Alert=0;
+      Alert = 0;
       message[0] = 0x03;
       message[1] = 0x01;
       NewAlertCharacteristic.write_resp( message, 2) ;
@@ -661,7 +653,7 @@ void handle_isig() {
   if (EST_GLUCOSE < 80  && alertCount == 0 && EST_GLUCOSE > 65) {
     if (alertCount == 0) {
       //msgType = 0x03;
-      Alert=1;
+      Alert = 1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -674,8 +666,8 @@ void handle_isig() {
 
   if (EST_GLUCOSE < 60) {
     if (alertCount == 0) {
-     // msgType = 0x03;
-      Alert=1;
+      // msgType = 0x03;
+      Alert = 1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -689,7 +681,7 @@ void handle_isig() {
   if (EST_GLUCOSE > 180 ) {
     if (alertCount == 0) {
       //msgType = 0x03;
-      Alert=1;
+      Alert = 1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -707,7 +699,7 @@ void handle_isig() {
 
   if (abs(Slope) >= 3) {
     //msgType = 0x03;
-    Alert=1;
+    Alert = 1;
   }
 
 
@@ -847,7 +839,7 @@ void prph_connect_callback(uint16_t conn_handle)
   Serial.print("[Prph] Connected to ");
   Serial.println(peer_name);
   connection_count++;
-  if (connection_count<=2){
+  if (connection_count <= 2) {
     Bluefruit.Advertising.start(0);
   }
 }
@@ -1141,10 +1133,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   //mi band is FA:AB:33:E3:12:2D
   //this is the system id
   Serial.println(report->peer_addr.addr[5], HEX);
-  //if (report->peer_addr.addr[5] == 0xF2) {  //amazfit cor  FB
-   // if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
-  //   if (report->peer_addr.addr[5] == 0xF8) {  //karins
- if (report->peer_addr.addr[5] == 0xDC) {  //karins
+  if (report->peer_addr.addr[5] == 0xDC) {  //karins
     // Connect to device
     Serial.println("Found device");
     //connecting = 1;
