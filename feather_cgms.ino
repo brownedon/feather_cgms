@@ -7,8 +7,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <Adafruit_SleepyDog.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
+using namespace Adafruit_LittleFS_Namespace;
 
-#include <Nffs.h>
+File file(InternalFS);
 
 #define SLOPE_FILENAME "/slope.txt"
 #define INTERCEPT_FILENAME "/intercept.txt"
@@ -18,9 +22,9 @@
 #define VBAT_DIVIDER      (0.71275837F)   // 2M + 0.806M voltage divider on VBAT = (2M / (0.806M + 2M))
 #define VBAT_DIVIDER_COMP (1.403F)        // Compensation factor for the VBAT divider
 
-NffsFile file;
-
 ble_gap_evt_adv_report_t* global_report;
+
+uint8_t connection_count = 0;
 
 int newValue = 0;
 uint16_t value ;
@@ -30,10 +34,10 @@ long cc2500_recv_time = 0;
 int waitTime = 0;
 int showReadings = 0;
 int alertCount = 0;
-int periph_connected = 0;
 int lowBatt = 0;
 int missCount = 0;
-int connecting = 0;
+
+int Alert=0;
 
 //cgms
 //
@@ -129,8 +133,6 @@ const uint8_t PAIRING_KEY[18] = {0x01, 0x08, 0xC8, 0x2A, 0xE3, 0x40, 0xEB, 0x1A,
 //first time run with a new mi band, change to 0 for full pairing
 //
 int authenticated = 1;
-int amazfit_cor=0;
-int important_alert=0;
 //
 uint8_t CONFIRM[2] = {0x02, 0x08};
 
@@ -144,7 +146,6 @@ BLEClientService       AlertNotifService(0x1811);
 BLEClientCharacteristic NewAlertCharacteristic(0x2a46);
 
 int Paired = 0;
-//uint16_t conn_handle1;
 //
 // end mi
 //
@@ -165,6 +166,21 @@ BLECharacteristic slope = BLECharacteristic(SLOPE_CHARACTERISTIC_UUID);
 BLECharacteristic intercept = BLECharacteristic(INTERCEPT_CHARACTERISTIC_UUID);
 BLECharacteristic battery = BLECharacteristic(BATTERY_CHARACTERISTIC_UUID);
 
+
+
+//heart rate
+/* HRM Service Definitions
+   Heart Rate Monitor Service:  0x180D
+   Heart Rate Measurement Char: 0x2A37
+   Body Sensor Location Char:   0x2A38
+*/
+BLEService        hrms = BLEService(UUID16_SVC_HEART_RATE);
+BLECharacteristic hrmc = BLECharacteristic(UUID16_CHR_HEART_RATE_MEASUREMENT);
+BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
+
+
+//cadence
+//Service 1816
 //
 // end peripheral
 //
@@ -174,27 +190,34 @@ BLECharacteristic battery = BLECharacteristic(BATTERY_CHARACTERISTIC_UUID);
 void setup()
 {
   Serial.begin(115200);
-  // Initialize Bluefruit with max concurrent connections as Peripheral = 1, Central = 1
+    Serial.println("Setup");
+   int countdownMS = Watchdog.enable(10000);
+  // Initialize Bluefruit with max concurrent connections as Peripheral = 2, Central = 1
+  // put 3 here and I think you run out of memory ...
+  // 2,1 also makes it hang 
   Bluefruit.begin(1, 1);
 
-  // Initialize Nffs
-  Nffs.begin();
+  // Initialize Internal File System
+  InternalFS.begin();
   readSlope();
   readIntercept();
 
   // Set max power. Accepted s are: -40, -30, -20, -16, -12, -8, -4, 0, 4
   Bluefruit.setTxPower(4);
   Bluefruit.setName("Bluefruit CGMS");
-
+  //Bluefruit.Periph.setConnInterval(9, 24);
+  Bluefruit.Periph.setConnInterval(160, 80);
   // Callbacks for Peripheral
-  Bluefruit.setConnectCallback(prph_connect_callback);
-  Bluefruit.setDisconnectCallback(prph_disconnect_callback);
+  Bluefruit.Periph.setConnectCallback(prph_connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(prph_disconnect_callback);
 
   setup_cc2500();
   // Set up and start advertising
+  //setupHRM();
   startAdv();
   setup_mi();
   setupCGMS();
+
   initReadings();
   Scheduler.startLoop(loop_cc2500);
   //this sets up nffs for the first time
@@ -204,7 +227,69 @@ void setup()
   }
 }
 
+void setupHRM(void)
+{
+  // Configure the Heart Rate Monitor service
+  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.service.heart_rate.xml
+  // Supported Characteristics:
+  // Name                         UUID    Requirement Properties
+  // ---------------------------- ------  ----------- ----------
+  // Heart Rate Measurement       0x2A37  Mandatory   Notify
+  // Body Sensor Location         0x2A38  Optional    Read
+  // Heart Rate Control Point     0x2A39  Conditional Write       <-- Not used here
+  hrms.begin();
+
+  // Note: You must call .begin() on the BLEService before calling .begin() on
+  // any characteristic(s) within that service definition.. Calling .begin() on
+  // a BLECharacteristic will cause it to be added to the last BLEService that
+  // was 'begin()'ed!
+
+  // Configure the Heart Rate Measurement characteristic
+  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.heart_rate_measurement.xml
+  // Properties = Notify
+  // Min Len    = 1
+  // Max Len    = 8
+  //    B0      = UINT8  - Flag (MANDATORY)
+  //      b5:7  = Reserved
+  //      b4    = RR-Internal (0 = Not present, 1 = Present)
+  //      b3    = Energy expended status (0 = Not present, 1 = Present)
+  //      b1:2  = Sensor contact status (0+1 = Not supported, 2 = Supported but contact not detected, 3 = Supported and detected)
+  //      b0    = Value format (0 = UINT8, 1 = UINT16)
+  //    B1      = UINT8  - 8-bit heart rate measurement value in BPM
+  //    B2:3    = UINT16 - 16-bit heart rate measurement value in BPM
+  //    B4:5    = UINT16 - Energy expended in joules
+  //    B6:7    = UINT16 - RR Internal (1/1024 second resolution)
+  hrmc.setProperties(CHR_PROPS_NOTIFY);
+  hrmc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  hrmc.setFixedLen(2);
+  //hrmc.setCccdWriteCallback(cccd_callback3);  // Optionally capture CCCD updates
+  hrmc.begin();
+  uint8_t hrmdata[2] = { 0b00000110, 0x40 }; // Set the characteristic to use 8-bit values, with the sensor connected and detected
+  hrmc.write(hrmdata, 2);
+
+  // Configure the Body Sensor Location characteristic
+  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.body_sensor_location.xml
+  // Properties = Read
+  // Min Len    = 1
+  // Max Len    = 1
+  //    B0      = UINT8 - Body Sensor Location
+  //      0     = Other
+  //      1     = Chest
+  //      2     = Wrist
+  //      3     = Finger
+  //      4     = Hand
+  //      5     = Ear Lobe
+  //      6     = Foot
+  //      7:255 = Reserved
+  bslc.setProperties(CHR_PROPS_READ);
+  bslc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bslc.setFixedLen(1);
+  bslc.begin();
+  bslc.write8(2);    // Set the characteristic to 'Wrist' (2)
+}
+
 void setup_mi() {
+  Serial.println("Central Setup");
   authService.begin();
 
   // set up callback for receiving measurement
@@ -215,14 +300,17 @@ void setup_mi() {
   NewAlertCharacteristic.begin();
   Bluefruit.Scanner.setRxCallback(scan_callback);
 
-
   // Callbacks for Central
   Bluefruit.Central.setDisconnectCallback(cent_disconnect_callback);
   Bluefruit.Central.setConnectCallback(cent_connect_callback);
-  Bluefruit.Scanner.restartOnDisconnect(false);
-  //Bluefruit.Scanner.filterRssi(-80);
+  Bluefruit.Scanner.restartOnDisconnect(true);
+  Bluefruit.Scanner.filterRssi(-100);
+  // Bluefruit.Scanner.setInterval(32, 244);       // in units of 0.625 ms
   Bluefruit.Scanner.setInterval(160, 80);       // in units of 0.625 ms
   Bluefruit.Scanner.useActiveScan(true);        // Request scan response data
+  Bluefruit.Scanner.start(0);
+
+  Serial.println("Scanning ...");
 }
 
 void setup_cc2500() {
@@ -251,7 +339,7 @@ void setupCGMS(void)
   //
   Serial.println("slope");
   uint8_t tmpValue[2] = {0x00, 0x00};
-  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
+  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
   slope.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   slope.setUserDescriptor("Slope");
   slope.setFixedLen(2);
@@ -259,7 +347,7 @@ void setupCGMS(void)
   slope.write(tmpValue, 2);
   //
   Serial.println("intercept");
-  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
+  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
   intercept.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   intercept.setUserDescriptor("Intercept");
   intercept.setFixedLen(2);
@@ -270,28 +358,46 @@ void setupCGMS(void)
   battery.setProperties(CHR_PROPS_NOTIFY);
   battery.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   battery.setUserDescriptor("Battery");
-  battery.setCccdWriteCallback(cccd_callback2);
+  //battery.setCccdWriteCallback(cccd_callback2);
   battery.setFixedLen(1);
   battery.begin();
   battery.notify(tmpValue, 1);
   Serial.println("Done SetupCGMS");
 }
 
-void cccd_callback1(BLECharacteristic& chr, uint16_t cccd_)
+
+void cccd_callback1(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
 {
   // Display the raw request packet
   Serial.print("CCCD Updated: ");
-  Serial.print(cccd_);
+  Serial.print(cccd_value);
+  Serial.println("");
+}
+/*
+void cccd_callback2(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
+{
+  // Display the raw request packet
+  Serial.print("CCCD Updated: ");
+  Serial.print(cccd_value);
   Serial.println("");
 }
 
-void cccd_callback2(BLECharacteristic& chr, uint16_t cccd_)
+void cccd_callback3(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
 {
   // Display the raw request packet
   Serial.print("CCCD Updated: ");
-  Serial.print(cccd_);
+  Serial.print(cccd_value);
   Serial.println("");
+
+  if (chr->uuid == hrmc.uuid) {
+    if (chr->notifyEnabled(conn_hdl)) {
+      Serial.println("Heart Rate Measurement 'Notify' enabled");
+    } else {
+      Serial.println("Heart Rate Measurement 'Notify' disabled");
+    }
+  }
 }
+*/
 
 void startAdv(void)
 {
@@ -299,9 +405,13 @@ void startAdv(void)
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
   Bluefruit.Advertising.addService(cgms);
+  // Include HRM Service UUID
+  Bluefruit.Advertising.addService(hrms);
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
+  //if this doesn't match Bluefruit.Scanner.setInterval above, then this won't reconnect
+  // Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
+  Bluefruit.Advertising.setInterval(160, 80);
   Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds
 }
@@ -309,7 +419,7 @@ void startAdv(void)
 void loop()
 {
   peripheral_comm();
-
+    Watchdog.reset();
   /* Clear exceptions and PendingIRQ from the FPU unit */
   // See: https://devzone.nordicsemi.com/f/nordic-q-a/15243/high-power-consumption-when-using-fpu
   // possibly triggered by low level errors that I've since resolved
@@ -318,6 +428,7 @@ void loop()
   __set_FPSCR(__get_FPSCR()  & ~(FPU_EXCEPTION_MASK));
   (void) __get_FPSCR();
   NVIC_ClearPendingIRQ(FPU_IRQn);
+
   waitForEvent();
   delay(2000);
 }
@@ -336,8 +447,6 @@ void loop_cc2500()
 
   waitForEvent();
   delay(int(298) * 1000);
-  Bluefruit.Scanner.stop();
-  connecting = 0;
 }
 
 void peripheral_comm() {
@@ -369,12 +478,25 @@ void peripheral_comm() {
         ch[3] = (int)((ISIG >> 8) & 0XFF);
         ch[4] = (int)((ISIG & 0XFF));
 
-        if ( !isig.notify(ch, 5)) {
-          Serial.println("isig characteristic update failed");
+        if ( isig.notify(ch, 5)) {
+          Serial.println("isig characteristic updated");
         };
 
-        if (!battery.notify8(cgms_battery)) {
-          Serial.println("battery characteristic update failed");
+        if (battery.notify8(cgms_battery)) {
+          Serial.println("battery characteristic updated");
+        };
+
+        ch[0] = (int)((SLOPE >> 8) & 0XFF);
+        ch[1] = (int)((SLOPE & 0XFF));
+        if ( slope.notify(ch, 2)) {
+          Serial.println("slope characteristic updated");
+        };
+
+
+        ch[0] = (int)((INTERCEPT >> 8) & 0XFF);
+        ch[1] = (int)((INTERCEPT & 0XFF));
+        if ( intercept.notify(ch, 2)) {
+          Serial.println("intercept characteristic updated");
         };
       }
       //
@@ -400,18 +522,22 @@ void peripheral_comm() {
         writeIntercept();
       }
     }
-    //send any new messages to the MI
-    if (newValue ) {
-      if (!Bluefruit.Central.connected() && !connecting) {
-        Bluefruit.Scanner.start(20);
-        Serial.println("Scanning ...");
-      }
+    //send "heart rate"
+    uint8_t hrmdata[2] = { 0b00000110, EST_GLUCOSE };
+    if (EST_GLUCOSE>229){
+       //if over 229, hrm won't display.  SO just return 229 in this case
+       hrmdata[2] =  229 ;
     }
+
+    if ( hrmc.notify(hrmdata, sizeof(hrmdata)) ) {
+      Serial.print("Heart Rate Measurement(glucose) updated to: "); Serial.println(EST_GLUCOSE);
+    }
+  
   }
 }
 
 void missedReadingsMsg() {
-  message[0] = 0x03;
+  message[0] = 0x05;
   message[1] = 0x01;
   message[2] = 0x4d;//M
   message[3] = 0x69;//i
@@ -428,6 +554,50 @@ void missedReadingsMsg() {
   newValue = 1;
 }
 
+void do_messaging() {
+  if (Paired) {
+    //if high, low or rapidly changing, vibrate until acknowledged
+    if (Alert){
+      Serial.println("Alert");
+      Alert=0;
+      message[0] = 0x03;
+      message[1] = 0x01;
+      NewAlertCharacteristic.write_resp( message, 2) ;
+      delay(10000);
+      message[0] = 0x05;
+    }
+
+    //send the glucose
+    if (newValue) {
+      Serial.println("Send Message");
+      NewAlertCharacteristic.write_resp( message, 12 ) ;
+      newValue = 0;
+    }
+
+    int vbat = readVBAT();
+    Serial.println(vbat);
+    if (vbat < 2900  && lowBatt == 0) {
+      delay(1000);
+      message[0] = 0x05;
+      message[1] = 0x01;
+      message[2] = 0x42;//B
+      message[3] = 0x61;//a
+      message[4] = 0x74;//t
+      message[5] = 0x74;//t
+      delay(3000);
+      NewAlertCharacteristic.write_resp( message, 6) ;
+      lowBatt == 1;
+    }
+
+    //2200 never alerts
+    if (vbat > 2900  && lowBatt == 1) {
+      //reset although plugging in to charge probably cleared this anyway
+      lowBatt == 0;
+    }
+  } else {
+    Bluefruit.Scanner.start(0);
+  }
+}
 void handle_isig() {
   Serial.println("handle_isig");
 
@@ -490,7 +660,8 @@ void handle_isig() {
   //
   if (EST_GLUCOSE < 80  && alertCount == 0 && EST_GLUCOSE > 65) {
     if (alertCount == 0) {
-      msgType = 0x03;
+      //msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -503,7 +674,8 @@ void handle_isig() {
 
   if (EST_GLUCOSE < 60) {
     if (alertCount == 0) {
-      msgType = 0x03;
+     // msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -516,7 +688,8 @@ void handle_isig() {
 
   if (EST_GLUCOSE > 180 ) {
     if (alertCount == 0) {
-      msgType = 0x03;
+      //msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -533,7 +706,8 @@ void handle_isig() {
   }
 
   if (abs(Slope) >= 3) {
-    msgType = 0x03;
+    //msgType = 0x03;
+    Alert=1;
   }
 
 
@@ -575,6 +749,7 @@ void handle_isig() {
       message[3] = 0x6F;
       message[4] = 0x6F;
       message[5] = 0x64;
+
       showReadings = 1;
     } else {
       message[2] = 0xff;
@@ -597,14 +772,6 @@ void handle_isig() {
   Serial.print("Slope:"); Serial.println(Slope);
   Serial.print("TimeToLimit:"); Serial.println(timeToLimit);
 
-  //dont do sms here
-  if (amazfit_cor){
-    if (msgType==0x03){
-      important_alert=1;
-      }
-   msgType = 0x05;
-  }
-
   message[0] = msgType;
   message[1] = 0x01;
 
@@ -612,6 +779,9 @@ void handle_isig() {
     newValue = 1;
     message_len = 12;
   }
+
+  do_messaging();
+
 }
 
 
@@ -671,21 +841,25 @@ float getSlopeGlucose() {
 void prph_connect_callback(uint16_t conn_handle)
 {
   Serial.println("prph_scan_callback ... ");
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
   char peer_name[32] = { 0 };
-  Bluefruit.Gap.getPeerName(conn_handle, peer_name, sizeof(peer_name));
-  periph_connected = 1;
+  connection->getPeerName(peer_name, sizeof(peer_name));
   Serial.print("[Prph] Connected to ");
   Serial.println(peer_name);
-
+  connection_count++;
+  if (connection_count<=2){
+    Bluefruit.Advertising.start(0);
+  }
 }
 
 void prph_disconnect_callback(uint16_t conn_handle, uint8_t reason)
 {
   (void) conn_handle;
   (void) reason;
-  periph_connected = 0;
   Serial.println();
   Serial.println("[Prph] Disconnected");
+  connection_count --;
+  Bluefruit.Advertising.start(0);
 }
 
 //
@@ -735,9 +909,6 @@ long RxData_RF(void)
     while (!digitalRead(GDO0_PIN) && (millis() - timeStart < Delay) || (!digitalRead(GDO0_PIN) && Delay == 0))
     {
       delay(1);
-      //if (periph_connected) {
-      //  peripheral_comm();
-      //}
     }
     if (digitalRead(GDO0_PIN)) {
       Serial.println(digitalRead(GDO0_PIN));
@@ -841,6 +1012,7 @@ long RxData_RF(void)
           memcpy(packet, oldPacket, 18);
           continueWait = false;
           Serial.println("CRC Failed");
+
         }
       } else {
         memcpy(packet, oldPacket, 18);
@@ -965,27 +1137,29 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   uint8_t len = 0;
   uint8_t buffer[32];
   memset(buffer, 0, sizeof(buffer));
-  //prevent multiple simultaneous connection attempts
-  if (! Bluefruit.Central.connected() && !connecting) {
-    //mi band is FA:AB:33:E3:12:2D
-    Serial.println(report->peer_addr.addr[5],HEX);
-    if (report->peer_addr.addr[5] == 0xFB) {  //amazfit cor
-        //if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
-      //if (report->peer_addr.addr[5] == 0xF8) {  //karins
-      // Connect to device
-      Serial.println("Found device");
-      connecting = 1;
-      Bluefruit.Central.connect(report);
-      (void) report;
-    }
+  //Serial.println("Cent scan callback");
+  //mi band is FA:AB:33:E3:12:2D
+  //this is the system id
+  Serial.println(report->peer_addr.addr[5], HEX);
+  //if (report->peer_addr.addr[5] == 0xF2) {  //amazfit cor  FB
+   // if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
+  //   if (report->peer_addr.addr[5] == 0xF8) {  //karins
+ if (report->peer_addr.addr[5] == 0xDC) {  //karins
+    // Connect to device
+    Serial.println("Found device");
+    //connecting = 1;
+    Bluefruit.Central.connect(report);
+    (void) report;
+
+  } else {
+    Bluefruit.Scanner.resume();
   }
 }
 
 void cent_connect_callback(uint16_t conn_handle)
 {
-  Serial.println("Connected");
-  connecting = 0;
-  //conn_handle1 = conn_handle;
+  Serial.println("Cent Connected");
+
   if (AlertNotifService.discover(conn_handle)) {
     Serial.println("AlertNotifService discovered");
   }
@@ -1033,8 +1207,8 @@ void cent_disconnect_callback(uint16_t conn_handle, uint8_t reason)
   (void) conn_handle;
   (void) reason;
   Paired = 0;
-  connecting = 0;
-  Serial.println("Disconnected");
+  Serial.println("Cent Disconnected");
+  Bluefruit.Scanner.resume();
 }
 
 void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t len)
@@ -1086,46 +1260,11 @@ void authNotif_callback(BLEClientCharacteristic * chr, uint8_t* data, uint16_t l
 
   //Step 3 of pairing
   if (data[0] == 0x10 && data[1] == 0x03 && data[2] == 0x01) {
-    Paired = 1;
     Serial.println("Paired");
+    Paired = 1;
     authenticated = 1;
-    Serial.println("Write message");
-    Serial.println(GLUCOSE);
 
-    if (newValue) {
-      for (int i = 0; i < message_len; i++) {
-        Serial.print(message[i], HEX); Serial.print(":");
-      }
-
-      NewAlertCharacteristic.write_resp( message, 12 ) ;
-      newValue = 0;
-    //} else {
-    //  Serial.println("Already sent, skip");
-    //  Bluefruit.Scanner.stop();
-    }
-
-    Serial.print("Battery ");
-
-    int vbat = readVBAT();
-    Serial.println(vbat);
-    if (vbat < 2900  && lowBatt == 0) {
-      delay(1000);
-      message[0] = 0x03;
-      message[1] = 0x01;
-      message[2] = 0x42;//B
-      message[3] = 0x61;//a
-      message[4] = 0x74;//t
-      message[5] = 0x74;//t
-      delay(3000);
-      NewAlertCharacteristic.write_resp( message, 6) ;
-      lowBatt == 1;
-    }
-    
-    //2200 never alerts
-    if (vbat > 2900  && lowBatt == 1) {
-      //reset although plugging in to charge probably cleared this anyway
-      lowBatt == 0;
-    }
+    do_messaging();
   }
 }
 
@@ -1157,77 +1296,108 @@ void initReadings() {
 
 // Write the state to the local file system
 void writeSlope() {
-  NffsFile file;
-  if (file.open(SLOPE_FILENAME, FS_ACCESS_WRITE)) {
+  if ( file.open(SLOPE_FILENAME, FILE_O_WRITE) )
+  {
     char buffer[12];
     itoa(SLOPE, buffer, 10);
-    Serial.println();
-
     for (int i = 0; i < 3; i++) {
       Serial.print(buffer[i]);
     }
-    Serial.println();
-    file.write(buffer, sizeof(buffer));
+    file.seek(0);
+    file.write(buffer,  sizeof(buffer));
     file.close();
+  } else
+  {
+    Serial.println("Failed!");
   }
+
 }
 
 // Read the state from the local file system
 void readSlope() {
-  NffsFile file;
-  int value = 1; // set the default to return
-  if (Nffs.testFile(SLOPE_FILENAME)) {
-    file.open(SLOPE_FILENAME, FS_ACCESS_READ);
-    if (file.exists()) { //yes, we did just test this, but double check
-      Serial.println("Value from " SLOPE_FILENAME);
-      uint32_t readLen;
-      char buffer[12] = { 0 }; // buffer starts as an empty char array (C string)
-      readLen = file.read(buffer, 10);
-      buffer[readLen] = 0; // drop any last character and make sure the buffer contains a C string
-      value = atoi(buffer); // convert the string in the file to a number
-      SLOPE = value;
-      Serial.println(value);
+  file.open(SLOPE_FILENAME, FILE_O_READ);
+
+  // file existed
+  if ( file )
+  {
+    uint32_t readlen;
+    char buffer[64] = { 0 };
+    readlen = file.read(buffer, sizeof(buffer));
+
+    buffer[readlen] = 0;
+    Serial.println(buffer);
+
+    value = atoi(buffer); // convert the string in the file to a number
+    SLOPE = value;
+    Serial.println(value);
+
+    file.close();
+  } else
+  {
+    Serial.print("Open " SLOPE_FILENAME " file to write ... ");
+
+    if ( file.open(SLOPE_FILENAME, FILE_O_WRITE) )
+    {
+      Serial.println("OK");
+      file.write("700", strlen("700"));
       file.close();
+    } else
+    {
+      Serial.println("Failed!");
     }
-  } else {
-    Serial.println("State file does not yet exist");
   }
 }
 
 void writeIntercept() {
-  NffsFile file;
-  if (file.open(INTERCEPT_FILENAME, FS_ACCESS_WRITE)) {
+  if ( file.open(INTERCEPT_FILENAME, FILE_O_WRITE) )
+  {
     char buffer[12];
     itoa(INTERCEPT, buffer, 10);
     Serial.println();
     for (int i = 0; i < 4; i++) {
       Serial.print(buffer[i]);
     }
-    Serial.println();
-    file.write(buffer, sizeof(buffer));
+    file.seek(0);
+    file.write(buffer,  sizeof(buffer));
     file.close();
+  } else
+  {
+    Serial.println("Failed!");
   }
 }
 
 // Read the state from the local file system
 void readIntercept() {
-  NffsFile file;
-  int value = 1; // set the default to return
-  if (Nffs.testFile(INTERCEPT_FILENAME)) {
-    file.open(INTERCEPT_FILENAME, FS_ACCESS_READ);
-    if (file.exists()) { //yes, we did just test this, but double check
-      Serial.println("Value from " INTERCEPT_FILENAME);
-      uint32_t readLen;
-      char buffer[12] = { 0 }; // buffer starts as an empty char array (C string)
-      readLen = file.read(buffer, 10);
-      buffer[readLen] = 0; // drop any last character and make sure the buffer contains a C string
-      value = atoi(buffer); // convert the string in the file to a number
-      INTERCEPT = value;
-      Serial.println(value);
+  file.open(INTERCEPT_FILENAME, FILE_O_READ);
+
+  // file existed
+  if ( file )
+  {
+    uint32_t readlen;
+    char buffer[64] = { 0 };
+    readlen = file.read(buffer, sizeof(buffer));
+
+    buffer[readlen] = 0;
+    Serial.println(buffer);
+
+    value = atoi(buffer); // convert the string in the file to a number
+    INTERCEPT = value;
+    Serial.println(value);
+
+    file.close();
+  } else
+  {
+    Serial.print("Open " INTERCEPT_FILENAME " file to write ... ");
+
+    if ( file.open(INTERCEPT_FILENAME, FILE_O_WRITE) )
+    {
+      Serial.println("OK");
+      file.write("30000", strlen("30000"));
       file.close();
+    } else
+    {
+      Serial.println("Failed!");
     }
-  } else {
-    Serial.println("State file does not yet exist");
   }
 }
 
