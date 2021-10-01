@@ -9,4 +9,4 @@ First time run, set authenticated=0, this will Pair the bluefruit with your MI B
 
 This will also work on the Amazfit Cor.
 
-Added feather_cgms_3.ino to work with Adafruit firmware 1.0.  Feather_cgms.ino compiles with 0.8.6.
+Added feather_cgms_3.ino to work with Adafruit firmware 1.0, also has watchdog timer to deal with device hanging up over time.  Feather_cgms.ino compiles with 0.8.6.
