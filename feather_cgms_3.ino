@@ -7,8 +7,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-
-//#include <Nffs.h>
+#include <Adafruit_SleepyDog.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 using namespace Adafruit_LittleFS_Namespace;
@@ -25,6 +24,8 @@ File file(InternalFS);
 
 ble_gap_evt_adv_report_t* global_report;
 
+uint8_t connection_count = 0;
+
 int newValue = 0;
 uint16_t value ;
 long notif_millis = millis();
@@ -35,6 +36,8 @@ int showReadings = 0;
 int alertCount = 0;
 int lowBatt = 0;
 int missCount = 0;
+
+int Alert=0;
 
 //cgms
 //
@@ -166,8 +169,6 @@ BLECharacteristic battery = BLECharacteristic(BATTERY_CHARACTERISTIC_UUID);
 
 
 //heart rate
-//NOTE: at the moment you will only be able to act as 1 peripheral at a time
-//you can either pair with a HRM or with an iPhone, not both
 /* HRM Service Definitions
    Heart Rate Monitor Service:  0x180D
    Heart Rate Measurement Char: 0x2A37
@@ -177,6 +178,9 @@ BLEService        hrms = BLEService(UUID16_SVC_HEART_RATE);
 BLECharacteristic hrmc = BLECharacteristic(UUID16_CHR_HEART_RATE_MEASUREMENT);
 BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
 
+
+//cadence
+//Service 1816
 //
 // end peripheral
 //
@@ -186,8 +190,12 @@ BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
 void setup()
 {
   Serial.begin(115200);
+    Serial.println("Setup");
+   int countdownMS = Watchdog.enable(10000);
   // Initialize Bluefruit with max concurrent connections as Peripheral = 2, Central = 1
-  Bluefruit.begin(2, 1);
+  // put 3 here and I think you run out of memory ...
+  // 2,1 also makes it hang 
+  Bluefruit.begin(1, 1);
 
   // Initialize Internal File System
   InternalFS.begin();
@@ -205,7 +213,7 @@ void setup()
 
   setup_cc2500();
   // Set up and start advertising
-  setupHRM();
+  //setupHRM();
   startAdv();
   setup_mi();
   setupCGMS();
@@ -254,7 +262,7 @@ void setupHRM(void)
   hrmc.setProperties(CHR_PROPS_NOTIFY);
   hrmc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   hrmc.setFixedLen(2);
-  hrmc.setCccdWriteCallback(cccd_callback3);  // Optionally capture CCCD updates
+  //hrmc.setCccdWriteCallback(cccd_callback3);  // Optionally capture CCCD updates
   hrmc.begin();
   uint8_t hrmdata[2] = { 0b00000110, 0x40 }; // Set the characteristic to use 8-bit values, with the sensor connected and detected
   hrmc.write(hrmdata, 2);
@@ -331,7 +339,7 @@ void setupCGMS(void)
   //
   Serial.println("slope");
   uint8_t tmpValue[2] = {0x00, 0x00};
-  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
+  slope.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
   slope.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   slope.setUserDescriptor("Slope");
   slope.setFixedLen(2);
@@ -339,7 +347,7 @@ void setupCGMS(void)
   slope.write(tmpValue, 2);
   //
   Serial.println("intercept");
-  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
+  intercept.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE|CHR_PROPS_NOTIFY);
   intercept.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   intercept.setUserDescriptor("Intercept");
   intercept.setFixedLen(2);
@@ -350,12 +358,13 @@ void setupCGMS(void)
   battery.setProperties(CHR_PROPS_NOTIFY);
   battery.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   battery.setUserDescriptor("Battery");
-  battery.setCccdWriteCallback(cccd_callback2);
+  //battery.setCccdWriteCallback(cccd_callback2);
   battery.setFixedLen(1);
   battery.begin();
   battery.notify(tmpValue, 1);
   Serial.println("Done SetupCGMS");
 }
+
 
 void cccd_callback1(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
 {
@@ -364,7 +373,7 @@ void cccd_callback1(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_val
   Serial.print(cccd_value);
   Serial.println("");
 }
-
+/*
 void cccd_callback2(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)//(BLECharacteristic& chr, uint16_t cccd_)
 {
   // Display the raw request packet
@@ -388,6 +397,8 @@ void cccd_callback3(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_val
     }
   }
 }
+*/
+
 void startAdv(void)
 {
   // Advertising packet
@@ -408,7 +419,7 @@ void startAdv(void)
 void loop()
 {
   peripheral_comm();
-
+    Watchdog.reset();
   /* Clear exceptions and PendingIRQ from the FPU unit */
   // See: https://devzone.nordicsemi.com/f/nordic-q-a/15243/high-power-consumption-when-using-fpu
   // possibly triggered by low level errors that I've since resolved
@@ -467,12 +478,25 @@ void peripheral_comm() {
         ch[3] = (int)((ISIG >> 8) & 0XFF);
         ch[4] = (int)((ISIG & 0XFF));
 
-        if ( !isig.notify(ch, 5)) {
-          Serial.println("isig characteristic update failed");
+        if ( isig.notify(ch, 5)) {
+          Serial.println("isig characteristic updated");
         };
 
-        if (!battery.notify8(cgms_battery)) {
-          Serial.println("battery characteristic update failed");
+        if (battery.notify8(cgms_battery)) {
+          Serial.println("battery characteristic updated");
+        };
+
+        ch[0] = (int)((SLOPE >> 8) & 0XFF);
+        ch[1] = (int)((SLOPE & 0XFF));
+        if ( slope.notify(ch, 2)) {
+          Serial.println("slope characteristic updated");
+        };
+
+
+        ch[0] = (int)((INTERCEPT >> 8) & 0XFF);
+        ch[1] = (int)((INTERCEPT & 0XFF));
+        if ( intercept.notify(ch, 2)) {
+          Serial.println("intercept characteristic updated");
         };
       }
       //
@@ -500,14 +524,20 @@ void peripheral_comm() {
     }
     //send "heart rate"
     uint8_t hrmdata[2] = { 0b00000110, EST_GLUCOSE };
+    if (EST_GLUCOSE>229){
+       //if over 229, hrm won't display.  SO just return 229 in this case
+       hrmdata[2] =  229 ;
+    }
+
     if ( hrmc.notify(hrmdata, sizeof(hrmdata)) ) {
       Serial.print("Heart Rate Measurement(glucose) updated to: "); Serial.println(EST_GLUCOSE);
     }
+  
   }
 }
 
 void missedReadingsMsg() {
-  message[0] = 0x03;
+  message[0] = 0x05;
   message[1] = 0x01;
   message[2] = 0x4d;//M
   message[3] = 0x69;//i
@@ -526,17 +556,29 @@ void missedReadingsMsg() {
 
 void do_messaging() {
   if (Paired) {
+    //if high, low or rapidly changing, vibrate until acknowledged
+    if (Alert){
+      Serial.println("Alert");
+      Alert=0;
+      message[0] = 0x03;
+      message[1] = 0x01;
+      NewAlertCharacteristic.write_resp( message, 2) ;
+      delay(10000);
+      message[0] = 0x05;
+    }
+
+    //send the glucose
     if (newValue) {
+      Serial.println("Send Message");
       NewAlertCharacteristic.write_resp( message, 12 ) ;
       newValue = 0;
     }
-    Serial.print("Battery ");
 
     int vbat = readVBAT();
     Serial.println(vbat);
     if (vbat < 2900  && lowBatt == 0) {
       delay(1000);
-      message[0] = 0x03;
+      message[0] = 0x05;
       message[1] = 0x01;
       message[2] = 0x42;//B
       message[3] = 0x61;//a
@@ -618,7 +660,8 @@ void handle_isig() {
   //
   if (EST_GLUCOSE < 80  && alertCount == 0 && EST_GLUCOSE > 65) {
     if (alertCount == 0) {
-      msgType = 0x03;
+      //msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -631,7 +674,8 @@ void handle_isig() {
 
   if (EST_GLUCOSE < 60) {
     if (alertCount == 0) {
-      msgType = 0x03;
+     // msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -644,7 +688,8 @@ void handle_isig() {
 
   if (EST_GLUCOSE > 180 ) {
     if (alertCount == 0) {
-      msgType = 0x03;
+      //msgType = 0x03;
+      Alert=1;
       alertCount++;
     } else {
       msgType = 0x05;
@@ -661,7 +706,8 @@ void handle_isig() {
   }
 
   if (abs(Slope) >= 3) {
-    msgType = 0x03;
+    //msgType = 0x03;
+    Alert=1;
   }
 
 
@@ -800,6 +846,10 @@ void prph_connect_callback(uint16_t conn_handle)
   connection->getPeerName(peer_name, sizeof(peer_name));
   Serial.print("[Prph] Connected to ");
   Serial.println(peer_name);
+  connection_count++;
+  if (connection_count<=2){
+    Bluefruit.Advertising.start(0);
+  }
 }
 
 void prph_disconnect_callback(uint16_t conn_handle, uint8_t reason)
@@ -808,6 +858,7 @@ void prph_disconnect_callback(uint16_t conn_handle, uint8_t reason)
   (void) reason;
   Serial.println();
   Serial.println("[Prph] Disconnected");
+  connection_count --;
   Bluefruit.Advertising.start(0);
 }
 
@@ -1090,10 +1141,10 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
   //mi band is FA:AB:33:E3:12:2D
   //this is the system id
   Serial.println(report->peer_addr.addr[5], HEX);
-  if (report->peer_addr.addr[5] == 0xF2) {  //amazfit cor  FB
-    //if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
-    // if (report->peer_addr.addr[5] == 0xF8) {  //karins
-
+  //if (report->peer_addr.addr[5] == 0xF2) {  //amazfit cor  FB
+   // if (report->peer_addr.addr[5] == 0xFA) {  //dons mi
+  //   if (report->peer_addr.addr[5] == 0xF8) {  //karins
+ if (report->peer_addr.addr[5] == 0xDC) {  //karins
     // Connect to device
     Serial.println("Found device");
     //connecting = 1;
