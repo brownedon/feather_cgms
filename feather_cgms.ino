@@ -183,7 +183,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("Setup");
-  int countdownMS = Watchdog.enable(10000);
+  int countdownMS = Watchdog.enable(60000);
   // Initialize Bluefruit with max concurrent connections as Peripheral = 2, Central = 1
   // put 3 here and I think you run out of memory ...
   // 2,1 also makes it hang
@@ -901,6 +901,7 @@ long RxData_RF(void)
     while (!digitalRead(GDO0_PIN) && (millis() - timeStart < Delay) || (!digitalRead(GDO0_PIN) && Delay == 0))
     {
       delay(1);
+      Watchdog.reset();
     }
     if (digitalRead(GDO0_PIN)) {
       Serial.println(digitalRead(GDO0_PIN));
